@@ -11,7 +11,7 @@ interface UserProfile {
   uid: string
   email: string
   displayName: string
-  role?: "doctor" | "patient"
+  role?: "doctor" | "patient" | "government"  // <-- added government
   clinicName?: string
   clinicAddress?: string
   phoneNumber?: string
@@ -20,6 +20,7 @@ interface UserProfile {
   gender?: string
   emergencyContact?: string
 }
+
 
 interface AuthContextType {
   user: User | null

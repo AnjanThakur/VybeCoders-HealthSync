@@ -1,14 +1,14 @@
 "use client"
 
 import type React from "react"
-
-import { useState } from "react"
-import { useUploadThing } from "@/lib/uploadthing-hooks"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Scan, Upload, FileText, Download, Loader2 } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { db } from "@/lib/firebase" // adjust import path to your firebase config
+import { collection, query, orderBy, where, getDocs } from "firebase/firestore"
 
 interface ExtractedData {
   date: string | null
@@ -18,7 +18,7 @@ interface ExtractedData {
     address: string | null
     phone: string | null
   }
-  patientVitals: {
+  patientVitals?: {
     weight: string | null
     bloodPressure: string | null
     temperature: string | null
@@ -26,6 +26,7 @@ interface ExtractedData {
     height: string | null
     bmi: string | null
   } | null
+  values?: Record<string, string>   // ✅ dynamic key-value pairs
   prescriptions: Array<{
     medication: string
     dosage: string | null
@@ -34,6 +35,7 @@ interface ExtractedData {
   }>
   notes: string | null
 }
+
 
 interface ProcessedDocument {
   id: string
@@ -53,55 +55,80 @@ export function OCRUpload({ onUploadComplete }: OCRUploadProps) {
   const [documents, setDocuments] = useState<ProcessedDocument[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
 
-  const { startUpload, isUploading } = useUploadThing("medicalDocuments", {
-    onClientUploadComplete: async (res) => {
-      if (res && res[0]) {
-        await processDocument(res[0].url, res[0].name)
-      }
-    },
-    onUploadError: (error) => {
-      console.error("Upload error:", error)
-    },
-  })
+  // ✅ Fetch documents from Firestore on load
+  useEffect(() => {
+    const fetchDocuments = async () => {
+      if (!user?.uid) return
 
-  const processDocument = async (fileUrl: string, fileName: string) => {
+      try {
+        const q = query(
+          collection(db, "prescriptions"),
+          where("userId", "==", user.uid),
+          orderBy("uploadedAt", "desc")
+        )
+        const querySnapshot = await getDocs(q)
+
+        const docs: ProcessedDocument[] = querySnapshot.docs.map((doc) => {
+          const data = doc.data()
+          return {
+            id: doc.id,
+            fileName: data.fileName || "Unknown",
+            fileUrl: data.fileUrl || "",
+            extractedData: data.extractedData || {
+              date: null,
+              doctorInfo: { name: null, clinic: null, address: null, phone: null },
+              patientVitals: null,
+              prescriptions: [],
+              notes: null,
+            },
+            uploadedAt: data.uploadedAt?.toDate?.() || new Date(),
+            status: data.status || "completed",
+          }
+        })
+
+        setDocuments(docs)
+      } catch (error) {
+        console.error("Error fetching documents:", error)
+      }
+    }
+
+    fetchDocuments()
+  }, [user])
+
+  const processDocument = async (file: File) => {
     setIsProcessing(true)
 
     try {
-      const response = await fetch(fileUrl)
-      const blob = await response.blob()
-      const base64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader()
-        reader.onloadend = () => resolve(reader.result as string)
-        reader.readAsDataURL(blob)
-      })
+      const formData = new FormData()
+      formData.append("file", file)
+      if (user?.uid) {
+        formData.append("userId", user.uid)
+      }
 
       const ocrResponse = await fetch("/api/ocr", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageData: base64,
-          imageUrl: fileUrl,
-          userId: user?.uid,
-        }),
+        body: formData,
       })
 
-      const { data } = await ocrResponse.json()
+      if (!ocrResponse.ok) {
+        throw new Error(`OCR failed with status ${ocrResponse.status}`)
+      }
+
+      const { prescription, id } = await ocrResponse.json()
 
       const newDoc: ProcessedDocument = {
-        id: Date.now().toString(), // Temporary ID for display
-        fileName,
-        fileUrl,
-        extractedData: data,
+        id: id || Date.now().toString(),
+        fileName: file.name,
+        fileUrl: URL.createObjectURL(file),
+        extractedData: prescription.extractedData,
         uploadedAt: new Date(),
         status: "completed",
       }
 
+      // ✅ Add immediately in UI
       setDocuments((prev) => [newDoc, ...prev])
 
-      if (onUploadComplete) {
-        onUploadComplete()
-      }
+      if (onUploadComplete) onUploadComplete()
     } catch (error) {
       console.error("Processing error:", error)
     } finally {
@@ -112,7 +139,7 @@ export function OCRUpload({ onUploadComplete }: OCRUploadProps) {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (files && files.length > 0) {
-      startUpload(Array.from(files))
+      Array.from(files).forEach((file) => processDocument(file))
     }
   }
 
@@ -121,25 +148,31 @@ export function OCRUpload({ onUploadComplete }: OCRUploadProps) {
       <Card>
         <CardHeader>
           <CardTitle>Upload Medical Documents</CardTitle>
-          <CardDescription>Upload prescription images to extract and digitize the information using AI</CardDescription>
+          <CardDescription>
+            Upload prescription images to extract and digitize the information using AI
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-center p-8 border-2 border-dashed border-muted-foreground/25 rounded-lg">
             <div className="text-center">
-              {isUploading || isProcessing ? (
+              {isProcessing ? (
                 <>
                   <Loader2 className="h-12 w-12 text-primary mx-auto mb-4 animate-spin" />
-                  <p className="text-muted-foreground">{isUploading ? "Uploading..." : "Processing with AI..."}</p>
+                  <p className="text-muted-foreground">Processing with AI...</p>
                 </>
               ) : (
                 <>
                   <Scan className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">Upload prescription images for AI processing</p>
-                  <p className="text-xs text-muted-foreground mt-2">Supports JPG, PNG files up to 10MB</p>
+                  <p className="text-muted-foreground">
+                    Upload prescription images or PDFs for AI processing
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Supports JPG, PNG, PDF up to 10MB
+                  </p>
                   <div className="mt-4">
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,.pdf"
                       multiple
                       onChange={handleFileSelect}
                       className="hidden"
@@ -163,7 +196,9 @@ export function OCRUpload({ onUploadComplete }: OCRUploadProps) {
         <Card>
           <CardHeader>
             <CardTitle>Processed Documents</CardTitle>
-            <CardDescription>AI-extracted information from your uploaded prescriptions</CardDescription>
+            <CardDescription>
+              AI-extracted information from your uploaded prescriptions
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -184,71 +219,63 @@ export function OCRUpload({ onUploadComplete }: OCRUploadProps) {
                   </div>
 
                   {doc.extractedData && (
-                    <div className="grid gap-3 text-sm">
-                      {doc.extractedData.date && (
-                        <div>
-                          <span className="font-medium">Date:</span> {doc.extractedData.date}
-                        </div>
-                      )}
+  <div className="grid gap-3 text-sm">
+    {doc.extractedData.date && (
+      <div>
+        <span className="font-medium">Date:</span> {doc.extractedData.date}
+      </div>
+    )}
 
-                      {(doc.extractedData.doctorInfo.name || doc.extractedData.doctorInfo.clinic) && (
-                        <div>
-                          <span className="font-medium">Doctor:</span>{" "}
-                          {doc.extractedData.doctorInfo.name && doc.extractedData.doctorInfo.name}
-                          {doc.extractedData.doctorInfo.clinic && ` - ${doc.extractedData.doctorInfo.clinic}`}
-                          {doc.extractedData.doctorInfo.phone && ` (${doc.extractedData.doctorInfo.phone})`}
-                        </div>
-                      )}
+    {(doc.extractedData.doctorInfo.name || doc.extractedData.doctorInfo.clinic) && (
+      <div>
+        <span className="font-medium">Doctor:</span>{" "}
+        {doc.extractedData.doctorInfo.name}
+        {doc.extractedData.doctorInfo.clinic &&
+          ` - ${doc.extractedData.doctorInfo.clinic}`}
+        {doc.extractedData.doctorInfo.phone &&
+          ` (${doc.extractedData.doctorInfo.phone})`}
+      </div>
+    )}
 
-                      {doc.extractedData.patientVitals && (
-                        <div>
-                          <span className="font-medium">Patient Vitals:</span>
-                          <div className="ml-4 text-xs space-y-1">
-                            {doc.extractedData.patientVitals.weight && (
-                              <div>Weight: {doc.extractedData.patientVitals.weight}</div>
-                            )}
-                            {doc.extractedData.patientVitals.bloodPressure && (
-                              <div>Blood Pressure: {doc.extractedData.patientVitals.bloodPressure}</div>
-                            )}
-                            {doc.extractedData.patientVitals.temperature && (
-                              <div>Temperature: {doc.extractedData.patientVitals.temperature}</div>
-                            )}
-                            {doc.extractedData.patientVitals.pulse && (
-                              <div>Pulse: {doc.extractedData.patientVitals.pulse}</div>
-                            )}
-                            {doc.extractedData.patientVitals.height && (
-                              <div>Height: {doc.extractedData.patientVitals.height}</div>
-                            )}
-                            {doc.extractedData.patientVitals.bmi && (
-                              <div>BMI: {doc.extractedData.patientVitals.bmi}</div>
-                            )}
-                          </div>
-                        </div>
-                      )}
+    {/* ✅ Instead of patientVitals, display extracted values */}
+    {doc.extractedData.values && Object.keys(doc.extractedData.values).length > 0 && (
+      <div>
+        <span className="font-medium">Extracted Values:</span>
+        <div className="ml-4 text-xs space-y-1">
+          {Object.entries(doc.extractedData.values).map(([key, value]) => (
+            <div key={key}>
+              {key}: {value as string}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
 
-                      {doc.extractedData.prescriptions.length > 0 && (
-                        <div>
-                          <span className="font-medium">Prescriptions:</span>
-                          <ul className="mt-1 space-y-1 ml-4">
-                            {doc.extractedData.prescriptions.map((prescription, index) => (
-                              <li key={index} className="text-xs">
-                                <span className="font-medium">{prescription.medication}</span>
-                                {prescription.dosage && ` - ${prescription.dosage}`}
-                                {prescription.timings.length > 0 && ` (${prescription.timings.join(", ")})`}
-                                {prescription.duration && ` for ${prescription.duration}`}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+    {doc.extractedData.prescriptions.length > 0 && (
+      <div>
+        <span className="font-medium">Prescriptions:</span>
+        <ul className="mt-1 space-y-1 ml-4">
+          {doc.extractedData.prescriptions.map((prescription, index) => (
+            <li key={index} className="text-xs">
+              <span className="font-medium">{prescription.medication}</span>
+              {prescription.dosage && ` - ${prescription.dosage}`}
+              {prescription.timings.length > 0 &&
+                ` (${prescription.timings.join(", ")})`}
+              {prescription.duration && ` for ${prescription.duration}`}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )}
 
-                      {doc.extractedData.notes && (
-                        <div>
-                          <span className="font-medium">Notes:</span> {doc.extractedData.notes}
-                        </div>
-                      )}
-                    </div>
-                  )}
+    {doc.extractedData.notes && (
+      <div>
+        <span className="font-medium">Notes:</span>{" "}
+        {doc.extractedData.notes}
+      </div>
+    )}
+  </div>
+)}
                 </div>
               ))}
             </div>

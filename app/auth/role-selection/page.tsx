@@ -8,13 +8,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Heart, Stethoscope, User } from "lucide-react"
+import { Heart, Stethoscope, User, ShieldCheck } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 export default function RoleSelectionPage() {
   const { userProfile, updateUserProfile } = useAuth()
-  const [selectedRole, setSelectedRole] = useState<"doctor" | "patient" | null>(null)
+  const [selectedRole, setSelectedRole] = useState<"doctor" | "patient" | "government" | null>(null)
   const [loading, setLoading] = useState(false)
+  const [govPassword, setGovPassword] = useState("")
   const router = useRouter()
 
   const [doctorData, setDoctorData] = useState({
@@ -33,15 +34,23 @@ export default function RoleSelectionPage() {
   const handleRoleSubmit = async () => {
     if (!selectedRole) return
 
+    if (selectedRole === "government" && govPassword !== "govpass123") {
+      alert("Incorrect government password")
+      return
+    }
+
     setLoading(true)
     try {
       const profileUpdate = {
         role: selectedRole,
-        ...(selectedRole === "doctor" ? doctorData : patientData),
+        ...(selectedRole === "doctor" ? doctorData : selectedRole === "patient" ? patientData : {}),
       }
 
       await updateUserProfile(profileUpdate)
-      router.push(selectedRole === "doctor" ? "/doctor/dashboard" : "/patient/dashboard")
+
+      if (selectedRole === "doctor") router.push("/doctor/dashboard")
+      else if (selectedRole === "patient") router.push("/patient/dashboard")
+      else router.push("/gov/dashboard")
     } catch (error) {
       console.error("Error updating profile:", error)
     } finally {
@@ -59,7 +68,7 @@ export default function RoleSelectionPage() {
         </div>
 
         {!selectedRole ? (
-          <div className="grid md:grid-cols-2 gap-6">
+          <div className="grid md:grid-cols-3 gap-6">
             <Card
               className="cursor-pointer hover:shadow-lg transition-shadow border-2 hover:border-primary"
               onClick={() => setSelectedRole("doctor")}
@@ -85,13 +94,26 @@ export default function RoleSelectionPage() {
                 </CardDescription>
               </CardHeader>
             </Card>
+
+            <Card
+              className="cursor-pointer hover:shadow-lg transition-shadow border-2 hover:border-primary"
+              onClick={() => setSelectedRole("government")}
+            >
+              <CardHeader className="text-center">
+                <ShieldCheck className="h-16 w-16 text-primary mx-auto mb-4" />
+                <CardTitle className="text-2xl">I'm Government</CardTitle>
+                <CardDescription>
+                  Access analytics dashboard for health data and lab statistics.
+                </CardDescription>
+              </CardHeader>
+            </Card>
           </div>
         ) : (
           <Card className="max-w-2xl mx-auto">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                {selectedRole === "doctor" ? <Stethoscope className="h-6 w-6" /> : <User className="h-6 w-6" />}
-                Complete Your {selectedRole === "doctor" ? "Doctor" : "Patient"} Profile
+                {selectedRole === "doctor" ? <Stethoscope className="h-6 w-6" /> : selectedRole === "patient" ? <User className="h-6 w-6" /> : <ShieldCheck className="h-6 w-6" />}
+                Complete Your {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} Profile
               </CardTitle>
               <CardDescription>Please provide additional information to set up your account.</CardDescription>
             </CardHeader>
@@ -132,13 +154,13 @@ export default function RoleSelectionPage() {
                     <Label htmlFor="specialization">Specialization</Label>
                     <Textarea
                       id="specialization"
-                      placeholder="Enter your medical specialization (e.g., Cardiology, General Medicine)"
+                      placeholder="Enter your medical specialization"
                       value={doctorData.specialization}
                       onChange={(e) => setDoctorData({ ...doctorData, specialization: e.target.value })}
                     />
                   </div>
                 </>
-              ) : (
+              ) : selectedRole === "patient" ? (
                 <>
                   <div className="space-y-2">
                     <Label htmlFor="dateOfBirth">Date of Birth</Label>
@@ -176,6 +198,17 @@ export default function RoleSelectionPage() {
                     />
                   </div>
                 </>
+              ) : (
+                <div className="space-y-2">
+                  <Label htmlFor="govPassword">Government Password *</Label>
+                  <Input
+                    id="govPassword"
+                    type="password"
+                    placeholder="Enter government password"
+                    value={govPassword}
+                    onChange={(e) => setGovPassword(e.target.value)}
+                  />
+                </div>
               )}
 
               <div className="flex gap-4 pt-4">
@@ -187,7 +220,8 @@ export default function RoleSelectionPage() {
                   disabled={
                     loading ||
                     (selectedRole === "doctor" &&
-                      (!doctorData.clinicName || !doctorData.clinicAddress || !doctorData.phoneNumber))
+                      (!doctorData.clinicName || !doctorData.clinicAddress || !doctorData.phoneNumber)) ||
+                    (selectedRole === "government" && !govPassword)
                   }
                   className="flex-1"
                 >
